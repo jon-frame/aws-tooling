@@ -1,0 +1,417 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SSM-based Multi-OS Patching Template
+Mappings:
+  SSMPatchDocumentName:
+    'false':
+      Document: AWS-RunPatchBaseline
+    'true':
+      Document: AWS-ApplyPatchBaseline
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Patch Group Settings
+        Parameters:
+          - AZAIdentifier
+          - AZBIdentifier
+          - AZCIdentifier
+          - PatchGroupTagName
+          - PatchGroupTagValue
+      - Label:
+          default: When to Check for Patches..
+        Parameters:
+          - PatchScanCron
+      - Label:
+          default: When to Install Patches..
+        Parameters:
+          - AZAPatchingCron
+          - AZBPatchingCron
+          - AZCPatchingCron
+          - MaintenanceDuration
+      - Label:
+          default: Patching Settings
+        Parameters:
+          - OperatingSystem
+          - Classification
+          - ApproveAfterDays
+          - IAMRole
+          - IAMRoleArn
+      - Label:
+          default: Logging Settings
+        Parameters:
+          - PatchingLoggingLocation
+          - PatchingLoggingPrefix
+Parameters:
+  AZAIdentifier:
+    Default: ap-southeast-2a
+    Description: Patch Group tag for identifing AZ-A Instances
+    Type: String
+  AZAPatchingCron:
+    Default: cron(0 0 0 1 1 ? 1970)
+    Description: Cron Expression for AZ A Patching Schedule ||
+                 cron(0 0 0 1 1 ? 1970) for never.
+    Type: String
+  AZBIdentifier:
+    Default: ap-southeast-2b
+    Description: Patch Group tag for identifing AZ-B Instances
+    Type: String
+  AZBPatchingCron:
+    Default: cron(0 0 0 1 1 ? 1970)
+    Description: Cron Expression for AZ B Patching Schedule
+    Type: String
+  AZCIdentifier:
+    Default: ap-southeast-2c
+    Description: Patch Group tag for identifing AZ-C Instances
+    Type: String
+  AZCPatchingCron:
+    Default: cron(0 0 0 1 1 ? 1970)
+    Description: Cron Expression for AZ C Patching Schedule
+    Type: String
+  AZTagName:
+    Description: Tag name for AZ identifier
+    Type: String
+    Default: AZ
+  ApproveAfterDays:
+    Default: '0'
+    Description: Number of Days before Approving Update
+    Type: String
+  Classification:
+    Description: 'Comma-separate Patches: (Windows) SecurityUpdates,CriticalUpdates,Updates,UpdateRollups
+                  | (Amazon Linux/RHEL): Security, Bugfix, Enhancement, Recommended, Newpackage
+                  | (SUSE) Security, Recommended, Optional, Feature, Document, Yast | (Ubuntu)
+                  All,libs,libdevel,python,doc,debug,translations,devel,admin,oldlibs,text,utils,net,web,gnome,perl,cli-mono,universe/net,x11,universe/utils,universe/python'
+    Type: CommaDelimitedList
+  IAMRole:
+    Description: Exported output for the IAM role ARN for all maintenance tasks
+    Type: String
+    Default: ''
+  IAMRoleArn:
+    Description: IAM role ARN for all maintenance tasks
+    Type: String
+    Default: ''
+  MaintenanceDuration:
+    Description: Maintenance Window duration
+    Type: String
+    Default: '1'
+  OperatingSystem:
+    AllowedValues:
+      - AMAZON_LINUX
+      - REDHAT_ENTERPRISE_LINUX
+      - SUSE
+      - UBUNTU
+      - WINDOWS
+    Default: WINDOWS
+    Description: Operating System for Patching
+    Type: String
+  PatchGroupTagName:
+    Description: Tag name for patch group filtering
+    Type: String
+    Default: PatchGroup
+  PatchGroupTagValue:
+    Description: Tag value for patch group filtering
+    Type: String
+  PatchScanCron:
+    Default: cron(0 10 * * ? *)
+    Description: Frequency for Patch compliance scans
+                 (cron format e.g. cron(0 10 * * ? *) )
+    Type: String
+  PatchingLoggingLocation:
+    Default: ''
+    Description: S3 Bucket to Log to
+    Type: String
+  PatchingLoggingPrefix:
+    Default: ''
+    Description: Folder in S3 to log Patch runs into
+    Type: String
+  UseAWSApplyPatchBaseline:
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: Use the older AWS-ApplyPatchBaseline Document?
+                 (Set to true for Windows Instances with old SSM agent)
+    Type: String
+Conditions:
+  IAMRoleIsDefined: !Not [ !Equals [ '', !Ref IAMRole ] ]
+  IAMRoleArnIsDefined: !Not [ !Equals [ '', !Ref IAMRoleArn ] ]
+  IsUbuntu: !Equals [ 'UBUNTU', !Ref OperatingSystem ]
+  PatchingLoggingLocationIsDefined: !Not [ !Equals [ '', !Ref PatchingLoggingLocation ] ]
+  PatchingLoggingPrefixIsDefined: !Not [ !Equals [ '', !Ref PatchingLoggingPrefix ] ]
+Resources:
+  PatchBaseline:
+    Type: AWS::SSM::PatchBaseline
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - ApproveAfterDays: !Ref ApproveAfterDays
+            PatchFilterGroup:
+              PatchFilters: !If
+                - IsUbuntu
+                - - Key: SECTION
+                    Values:
+                      - All
+                - - Key: CLASSIFICATION
+                    Values:
+                      Ref: Classification
+      ApprovedPatches: []
+      ApprovedPatchesComplianceLevel: HIGH
+      Description: !Sub "Patching of the ${OperatingSystem}"
+      Name: !Sub "${OperatingSystem}-Baseline"
+      OperatingSystem: !Ref OperatingSystem
+      PatchGroups:
+        - !Ref PatchGroupTagValue
+  SSMAZAMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      AllowUnassociatedTargets: 'True'
+      Cutoff: '0'
+      Description: !Sub "Patching of ${OperatingSystem} in AZA"
+      Duration: !Ref MaintenanceDuration
+      Name: !Sub "${OperatingSystem}-PatchInstall-AZA"
+      Schedule: !Ref AZAPatchingCron
+  SSMAZBMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      AllowUnassociatedTargets: 'True'
+      Cutoff: '0'
+      Description: !Sub "Patching of ${OperatingSystem} in AZB"
+      Duration: !Ref MaintenanceDuration
+      Name: !Sub "${OperatingSystem}-PatchInstall-AZB"
+      Schedule: !Ref AZBPatchingCron
+  SSMAZCMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      AllowUnassociatedTargets: 'True'
+      Cutoff: '0'
+      Description: !Sub "Patching of ${OperatingSystem} in AZC"
+      Duration: !Ref MaintenanceDuration
+      Name: !Sub "${OperatingSystem}-PatchInstall-AZC"
+      Schedule: !Ref AZCPatchingCron
+  SSMAllAZScanMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      AllowUnassociatedTargets: 'True'
+      Cutoff: '0'
+      Description: !Sub "Scanning for Patches for ${OperatingSystem} in all AZs"
+      Duration: !Ref MaintenanceDuration
+      Name: !Sub "${OperatingSystem}-PatchScan-All-AZs"
+      Schedule: !Ref PatchScanCron
+  SSMPatchingScan:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      Description: Scan for Updates
+      MaxConcurrency: '8'
+      MaxErrors: '2'
+      Name: ScanForMissing
+      Priority: '1'
+      ServiceRoleArn: !If
+        - IAMRoleIsDefined
+        - Fn::ImportValue: !Ref IAMRole
+        - !If
+          - IAMRoleArnIsDefined
+          - !Ref IAMRoleArn
+          - !Ref AWS::NoValue
+      Targets:
+        - Key: WindowTargetIds
+          Values:
+            - !Ref TargetsAllAZs
+      TaskArn:
+        Fn::FindInMap:
+          - SSMPatchDocumentName
+          - !Ref UseAWSApplyPatchBaseline
+          - Document
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          OutputS3BucketName: !If
+            - PatchingLoggingLocationIsDefined
+            - !Ref PatchingLoggingLocation
+            - !Ref AWS::NoValue
+          OutputS3KeyPrefix: !If
+            - PatchingLoggingPrefixIsDefined
+            - !Ref PatchingLoggingPrefix
+            - !Ref AWS::NoValue
+      TaskParameters:
+        Operation:
+          Values:
+            - Scan
+      TaskType: RUN_COMMAND
+      WindowId: !Ref SSMAllAZScanMaintenanceWindow
+  SSMPatchingTaskAZA:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      Description: Apply Updates on all instances in AZ A
+      MaxConcurrency: '4'
+      MaxErrors: '1'
+      Name: InstallMissing
+      Priority: '1'
+      ServiceRoleArn: !If
+        - IAMRoleIsDefined
+        - Fn::ImportValue: !Ref IAMRole
+        - !If
+          - IAMRoleArnIsDefined
+          - !Ref IAMRoleArn
+          - !Ref AWS::NoValue
+      Targets:
+        - Key: WindowTargetIds
+          Values:
+            - !Ref TargetsAZA
+      TaskArn:
+        Fn::FindInMap:
+          - SSMPatchDocumentName
+          - !Ref UseAWSApplyPatchBaseline
+          - Document
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          OutputS3BucketName: !If
+            - PatchingLoggingLocationIsDefined
+            - !Ref PatchingLoggingLocation
+            - !Ref AWS::NoValue
+          OutputS3KeyPrefix: !If
+            - PatchingLoggingPrefixIsDefined
+            - !Ref PatchingLoggingPrefix
+            - !Ref AWS::NoValue
+      TaskParameters:
+        Operation:
+          Values:
+            - Install
+      TaskType: RUN_COMMAND
+      WindowId: !Ref SSMAZAMaintenanceWindow
+  SSMPatchingTaskAZB:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      Description: Apply Updates on all instances in AZ B
+      MaxConcurrency: '4'
+      MaxErrors: '1'
+      Name: InstallMissing
+      Priority: '1'
+      ServiceRoleArn: !If
+        - IAMRoleIsDefined
+        - Fn::ImportValue: !Ref IAMRole
+        - !If
+          - IAMRoleArnIsDefined
+          - !Ref IAMRoleArn
+          - !Ref AWS::NoValue
+      Targets:
+        - Key: WindowTargetIds
+          Values:
+            - !Ref TargetsAZB
+      TaskArn:
+        Fn::FindInMap:
+          - SSMPatchDocumentName
+          - !Ref UseAWSApplyPatchBaseline
+          - Document
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          OutputS3BucketName: !If
+            - PatchingLoggingLocationIsDefined
+            - !Ref PatchingLoggingLocation
+            - !Ref AWS::NoValue
+          OutputS3KeyPrefix: !If
+            - PatchingLoggingPrefixIsDefined
+            - !Ref PatchingLoggingPrefix
+            - !Ref AWS::NoValue
+      TaskParameters:
+        Operation:
+          Values:
+            - Install
+      TaskType: RUN_COMMAND
+      WindowId: !Ref SSMAZBMaintenanceWindow
+  SSMPatchingTaskAZC:
+    Type: AWS::SSM::MaintenanceWindowTask
+    Properties:
+      Description: Apply Updates on all instances in AZ C
+      MaxConcurrency: '4'
+      MaxErrors: '1'
+      Name: InstallMissing
+      Priority: '1'
+      ServiceRoleArn: !If
+        - IAMRoleIsDefined
+        - Fn::ImportValue: !Ref IAMRole
+        - !If
+          - IAMRoleArnIsDefined
+          - !Ref IAMRoleArn
+          - !Ref AWS::NoValue
+      Targets:
+        - Key: WindowTargetIds
+          Values:
+            - !Ref TargetsAZC
+      TaskArn:
+        Fn::FindInMap:
+          - SSMPatchDocumentName
+          - !Ref UseAWSApplyPatchBaseline
+          - Document
+      TaskInvocationParameters:
+        MaintenanceWindowRunCommandParameters:
+          OutputS3BucketName: !If
+            - PatchingLoggingLocationIsDefined
+            - !Ref PatchingLoggingLocation
+            - !Ref AWS::NoValue
+          OutputS3KeyPrefix: !If
+            - PatchingLoggingPrefixIsDefined
+            - !Ref PatchingLoggingPrefix
+            - !Ref AWS::NoValue
+      TaskParameters:
+        Operation:
+          Values:
+            - Install
+      TaskType: RUN_COMMAND
+      WindowId:
+        Ref: SSMAZCMaintenanceWindow
+  TargetsAZA:
+    Properties:
+      Description: Prod AZ-A Targets
+      Name: TargetsAZA
+      ResourceType: INSTANCE
+      Targets:
+        - Key: !Sub "tag:${PatchGroupTagName}"
+          Values:
+            - !Ref PatchGroupTagValue
+        - Key: !Sub "tag:AZTagName"
+          Values:
+            - !Ref AZAIdentifier
+      WindowId:
+        Ref: SSMAZAMaintenanceWindow
+    Type: AWS::SSM::MaintenanceWindowTarget
+  TargetsAZB:
+    Type: AWS::SSM::MaintenanceWindowTarget
+    Properties:
+      Description: Prod AZ-B Targets
+      Name: TargetsAZB
+      ResourceType: INSTANCE
+      Targets:
+        - Key: !Sub "tag:${PatchGroupTagName}"
+          Values:
+            - !Ref PatchGroupTagValue
+        - Key: !Sub "tag:AZTagName"
+          Values:
+            - !Ref AZBIdentifier
+      WindowId:
+        Ref: SSMAZBMaintenanceWindow
+  TargetsAZC:
+    Type: AWS::SSM::MaintenanceWindowTarget
+    Properties:
+      Description: Prod AZ-C Targets
+      Name: TargetsAZC
+      ResourceType: INSTANCE
+      Targets:
+        - Key: !Sub "tag:${PatchGroupTagName}"
+          Values:
+            - !Ref PatchGroupTagValue
+        - Key: !Sub "tag:AZTagName"
+          Values:
+            - !Ref AZCIdentifier
+      WindowId:
+        Ref: SSMAZCMaintenanceWindow
+  TargetsAllAZs:
+    Type: AWS::SSM::MaintenanceWindowTarget
+    Properties:
+      Description: All Targets
+      Name: TargetsAllAZs
+      ResourceType: INSTANCE
+      Targets:
+        - Key: !Sub "tag:${PatchGroupTagName}"
+          Values:
+            - !Ref PatchGroupTagValue
+      WindowId:
+        Ref: SSMAllAZScanMaintenanceWindow
